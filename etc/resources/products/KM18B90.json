@@ -1,0 +1,78 @@
+{
+  "id": "KM18B90",
+  "name": "温湿压传感器",
+  "desc": "气压温湿度",
+  "protocol": "modbus_tcp",
+  "properties": [
+    {
+      "id": "temperature",
+      "name": "温度",
+      "desc": "温度",
+      "interval": "5s",
+      "unit": "0.01 摄氏度",
+      "field_type": "int",
+      "report_mode": "",
+      "writeable": false,
+      "aux_props": {
+        "byte_endian": "big",
+        "rgs_addr": "0",
+        "rgs_count": "1",
+        "rgs_type": "hold_register",
+        "word_endian": "big"
+      }
+    },
+    {
+      "id": "air_pressure",
+      "name": "大气压",
+      "desc": "大气压",
+      "interval": "5s",
+      "unit": "0.01 千帕",
+      "field_type": "int",
+      "report_mode": "",
+      "writeable": false,
+      "aux_props": {
+        "byte_endian": "big",
+        "rgs_addr": "1",
+        "rgs_count": "1",
+        "rgs_type": "hold_register",
+        "word_endian": "big"
+      }
+    },
+    {
+      "id": "humidity",
+      "name": "湿度",
+      "desc": "湿度",
+      "interval": "5s",
+      "unit": "0.01 RH",
+      "field_type": "int",
+      "report_mode": "",
+      "writeable": false,
+      "aux_props": {
+        "byte_endian": "big",
+        "rgs_addr": "2",
+        "rgs_count": "1",
+        "rgs_type": "hold_register",
+        "word_endian": "big"
+      }
+    }
+  ],
+  "events": [],
+  "methods": null,
+  "topics": [
+    {
+      "topic": "DATA/KM18B90/${DeviceID}/read/temperature",
+      "opt_type": "发布",
+      "desc": "设备上传属性(temperature)数据"
+    },
+    {
+      "topic": "DATA/KM18B90/${DeviceID}/read/air_pressure",
+      "opt_type": "发布",
+      "desc": "设备上传属性(air_pressure)数据"
+    },
+    {
+      "topic": "DATA/KM18B90/${DeviceID}/read/humidity",
+      "opt_type": "发布",
+      "desc": "设备上传属性(humidity)数据"
+    }
+  ]
+}

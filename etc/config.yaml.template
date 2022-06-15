@@ -1,0 +1,28 @@
+driver:
+  driver_health_check_interval_second: 5
+  device_health_check_interval_second: 5
+  device_auto_reconnect: true
+  device_auto_reconnect_interval_second: 60
+  device_auto_reconnect_max_retries: 1
+
+
+msgbus:
+  type: "MQTT"
+  mqtt:
+    host: 127.0.0.1
+    port: 1883
+    username: admin
+    password: 123456
+    connect_timout_millisecond: 30000
+    token_timeout_millisecond: 1000
+    qos: 2
+    clean_session: false
+    method_call_timeout_millisecond: 1000
+    with_tls: false
+    ca_path: etc/security/ca.crt
+    cert_path: etc/security/client.crt
+    key_path: etc/security/client.key
+
+log:
+  level: info
+  console: true
