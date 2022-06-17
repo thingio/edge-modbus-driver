@@ -1,4 +1,4 @@
-APP=edge-randnum-driver
+APP=edge-modbus-driver
 PKG=github.com/thingio/${APP}
 
 VERSION=$(shell cat ./VERSION 2>/dev/null || echo 0.0.0)

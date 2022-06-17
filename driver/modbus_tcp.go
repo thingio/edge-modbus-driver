@@ -16,14 +16,12 @@ import (
 
 type modbusTCPDriver struct {
 	*modbusTCPDeviceConf
-	tsID   int      // transaction id
-	pid    string   // product id
-	did    string   // device id
-	conn   net.Conn // tcp connection
-	closed bool
-	stop   chan bool
-	lock   sync.Mutex
-	once   sync.Once // ensure there is only one reconnect goroutine
+	tsID int      // transaction id
+	pid  string   // product id
+	did  string   // device id
+	conn net.Conn // tcp connection
+	lock sync.Mutex
+	once sync.Once // ensure there is only one reconnect goroutine
 }
 
 type modbusTCPDeviceConf struct {
@@ -41,8 +39,6 @@ type modbusTCPTwin struct {
 	device  *models.Device
 
 	properties map[models.ProductPropertyID]*models.ProductProperty // for property's reading and writing
-	events     map[models.ProductEventID]*models.ProductEvent       // for event's subscribing
-	methods    map[models.ProductMethodID]*models.ProductMethod     // for method's calling
 
 	lg *logger.Logger
 
@@ -50,24 +46,25 @@ type modbusTCPTwin struct {
 	cancel context.CancelFunc
 }
 
-func newModbusTCPDriver(device *models.Device) *modbusTCPDriver {
+func (d *modbusTCPDriver) pdu(frame []byte) []byte {
+	return frame[ModbusMBAPLength:]
+}
+
+func newModbusTCPDriver(device *models.Device) (*modbusTCPDriver, error) {
 	conf, err := parseModbusTcpDeviceConf(device)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	return &modbusTCPDriver{
 		modbusTCPDeviceConf: conf,
 		tsID:                0,
-		pid:                 "",
-		did:                 "",
+		pid:                 device.ProductID,
+		did:                 device.ID,
 		conn:                nil,
-		stop:                make(chan bool),
-		closed:              false,
 		lock:                sync.Mutex{},
 		once:                sync.Once{},
-	}
+	}, nil
 }
-
 func parseModbusTcpDeviceConf(device *models.Device) (*modbusTCPDeviceConf, error) {
 	dc := &modbusTCPDeviceConf{}
 	for k, v := range device.DeviceProps {
@@ -89,7 +86,11 @@ func parseModbusTcpDeviceConf(device *models.Device) (*modbusTCPDeviceConf, erro
 			}
 			dc.timeoutMS = int(t)
 		case ModbusTCPDeviceSlave:
-			dc.slave = []byte(v)[0]
+			slave, err := strconv.ParseUint(v, 10, 8)
+			if err != nil {
+				return dc, errors.NewCommonEdgeError(errors.Configuration, fmt.Sprintf("port [%v] error", v), nil)
+			}
+			dc.slave = byte(slave)
 		}
 	}
 	if dc.ip == "" || dc.port == 0 || dc.timeoutMS == 0 {
@@ -105,18 +106,9 @@ func NewModbusTCPTwin(product *models.Product, device *models.Device) (models.De
 	if device == nil {
 		return nil, errors.NewCommonEdgeError(errors.DeviceTwin, "Device is nil", nil)
 	}
-	tcpDriver := newModbusTCPDriver(device)
-	if tcpDriver == nil {
-		return nil, errors.NewCommonEdgeError(errors.DeviceTwin, "tcpDriver is nil", nil)
-	}
 	twin := &modbusTCPTwin{
-		modbusTCPDriver: tcpDriver,
-		product:         product,
-		device:          device,
-
-		properties: make(map[models.ProductPropertyID]*models.ProductProperty),
-		events:     make(map[models.ProductEventID]*models.ProductEvent),
-		methods:    make(map[models.ProductMethodID]*models.ProductMethod),
+		product: product,
+		device:  device,
 	}
 	return twin, nil
 }
@@ -124,14 +116,15 @@ func NewModbusTCPTwin(product *models.Product, device *models.Device) (models.De
 func (m *modbusTCPTwin) Initialize(lg *logger.Logger) error {
 	m.lg = lg
 
-	m.modbusTCPDriver.pid = m.product.ID
-	m.modbusTCPDriver.did = m.device.ID
+	tcpDriver, err := newModbusTCPDriver(m.device)
+	if err != nil {
+		return errors.NewCommonEdgeError(errors.DeviceTwin, "failed to initialize ModbusTCP driver", err)
+	}
+	m.modbusTCPDriver = tcpDriver
+
 	m.properties = make(map[models.ProductPropertyID]*models.ProductProperty)
 	for _, property := range m.product.Properties {
 		m.properties[property.Id] = property
-	}
-	for _, event := range m.product.Events {
-		m.events[event.Id] = event
 	}
 	return nil
 }
@@ -139,10 +132,6 @@ func (m *modbusTCPTwin) Initialize(lg *logger.Logger) error {
 func (m *modbusTCPTwin) Start(ctx context.Context) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)
 
-	if m.closed == true {
-		m.lg.Error("modbusTwin.Start Error: obj has been stopped")
-		return nil
-	}
 	addr, err := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%d", m.ip, m.port))
 	if err != nil {
 		m.lg.Errorf("modbusTwin.Start Error: illegal addr: %+v, err: %+v", addr, err)
@@ -150,7 +139,7 @@ func (m *modbusTCPTwin) Start(ctx context.Context) error {
 	}
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	conn, err := net.DialTimeout("tcp", addr.String(), time.Duration(m.timeoutMS))
+	conn, err := net.DialTimeout("tcp", addr.String(), time.Duration(m.timeoutMS)*time.Millisecond)
 	if err != nil {
 		m.lg.Errorf("modbusTwin.Start Error: TCP Connection addr: %+v, err: %+v", addr, err)
 		return err
@@ -162,8 +151,8 @@ func (m *modbusTCPTwin) Start(ctx context.Context) error {
 func (m *modbusTCPTwin) Stop(force bool) error {
 	m.cancel()
 
-	m.modbusTCPDriver.closed = true
-	m.modbusTCPDriver.stop <- true
+	m.lock.Lock()
+	defer m.lock.Unlock()
 	if m.conn != nil {
 		if err := m.conn.Close(); err != nil {
 			m.lg.Info("Stop ModbusTwin TCPDriver Error: %s:%s, err: %+v", m.ip, m.port, err)
@@ -174,13 +163,6 @@ func (m *modbusTCPTwin) Stop(force bool) error {
 }
 
 func (m *modbusTCPTwin) HealthCheck() (*models.DeviceStatus, error) {
-	if m.closed {
-		return &models.DeviceStatus{
-			Device:      m.device,
-			State:       models.DeviceStateDisconnected,
-			StateDetail: "连接已关闭",
-		}, nil
-	}
 	frame := modbusclient.TCPFrame{
 		TimeoutInMilliseconds:  2000,
 		DebugTrace:             false,
@@ -215,11 +197,29 @@ func (m *modbusTCPTwin) HealthCheck() (*models.DeviceStatus, error) {
 }
 
 func (m *modbusTCPTwin) Read(propertyID models.ProductPropertyID) (map[models.ProductPropertyID]*models.DeviceData, error) {
-	res := make(map[models.ProductPropertyID]*models.DeviceData)
-	property, ok := m.properties[propertyID]
-	if !ok {
-		return nil, errors.NewCommonEdgeError(errors.NotFound, fmt.Sprintf("the property[%s] hasn't been ready", property.Id), nil)
+	var err error
+
+	values := make(map[models.ProductPropertyID]*models.DeviceData)
+	if propertyID == models.DeviceDataMultiPropsID {
+		for _, property := range m.properties {
+			values[property.Id], err = m.read(property)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		property, ok := m.properties[propertyID]
+		if !ok {
+			return nil, errors.NewCommonEdgeError(errors.NotFound, fmt.Sprintf("undefined property: %s", property.Id), nil)
+		}
+		values[propertyID], err = m.read(property)
+		if err != nil {
+			return nil, err
+		}
 	}
+	return values, nil
+}
+func (m *modbusTCPTwin) read(property *models.ProductProperty) (*models.DeviceData, error) {
 	rgsAddr, _ := strconv.ParseUint(property.AuxProps[ModbusExtendRgsAddr], 10, 16)
 	rgsCount, _ := strconv.ParseUint(property.AuxProps[ModbusExtendRgsCount], 10, 16)
 	h := getDataHead(uint16(rgsAddr), uint16(rgsCount))
@@ -233,20 +233,16 @@ func (m *modbusTCPTwin) Read(propertyID models.ProductPropertyID) (map[models.Pr
 		m.modbusTCPDeviceConf.slave,
 		h,
 		false)
-	m.lock.Unlock()
 	if err != nil {
-		m.lg.Errorf("modbus HardRead Error: propertyID %+v, error %+v", propertyID, err)
-		return res, errors.NewCommonEdgeError(errors.BadRequest, "read modbus TCP device failed", nil)
+		return nil, errors.NewCommonEdgeError(errors.Internal, "read modbus TCP device failed", nil)
 	}
+	m.tsID++
+	m.lock.Unlock()
 	value, err := pud2Data(property.FieldType, binary.BigEndian, m.pdu(resp))
 	if err != nil {
-		return res, err
+		return nil, err
 	}
-	res[propertyID] = value.(*models.DeviceData)
-	return res, nil
-}
-func (d *modbusTCPDriver) pdu(frame []byte) []byte {
-	return frame[ModbusMBAPLength:]
+	return models.NewDeviceData(property.Id, property.FieldType, value)
 }
 
 func (m *modbusTCPTwin) Write(propertyID models.ProductPropertyID, values map[models.ProductPropertyID]*models.DeviceData) error {
@@ -273,8 +269,7 @@ func (m *modbusTCPTwin) Write(propertyID models.ProductPropertyID, values map[mo
 	}
 
 	head := getDataHead(uint16(rgsAddr), uint16(rgsCount))
-	value := values[propertyID]
-	bs, err := data2Bytes(property.FieldType, binary.BigEndian, value, int(follow))
+	bs, err := data2Bytes(property.FieldType, binary.BigEndian, values[propertyID].Value, int(follow))
 	if err != nil {
 		return err
 	}
@@ -282,24 +277,25 @@ func (m *modbusTCPTwin) Write(propertyID models.ProductPropertyID, values map[mo
 	m.lock.Lock()
 	_, err = modbusclient.TCPWrite(
 		m.conn,
-		m.timeoutMS,
+		m.modbusTCPDeviceConf.timeoutMS,
 		m.tsID,
 		funcCode,
-		m.serialBridge,
-		m.slave,
+		m.modbusTCPDeviceConf.serialBridge,
+		m.modbusTCPDeviceConf.slave,
 		append(head, bs...),
 		false)
+	m.tsID++
 	m.lock.Unlock()
 	if err != nil {
-		return errors.NewCommonEdgeError(errors.Driver, fmt.Sprintf("%+v write modbus tcp device failed", err), nil)
+		return errors.NewCommonEdgeError(errors.Driver, fmt.Sprintf("failed to write modbus tcp device"), err)
 	}
 	return nil
 }
 
 func (m *modbusTCPTwin) Subscribe(eventID models.ProductEventID, bus chan<- *models.DeviceDataWrapper) error {
-	return errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusTCP device does not support call-method"), nil)
+	return errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusTCP device does not support events' subscribing"), nil)
 }
 
 func (m *modbusTCPTwin) Call(methodID models.ProductMethodID, ins map[models.ProductPropertyID]*models.DeviceData) (outs map[models.ProductPropertyID]*models.DeviceData, err error) {
-	return nil, errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusTCP device does not support call-method"), nil)
+	return nil, errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusTCP device does not support methods' calling"), nil)
 }

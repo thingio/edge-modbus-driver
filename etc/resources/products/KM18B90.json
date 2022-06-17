@@ -11,7 +11,7 @@
       "interval": "5s",
       "unit": "0.01 摄氏度",
       "field_type": "int",
-      "report_mode": "",
+      "report_mode": "periodical",
       "writeable": false,
       "aux_props": {
         "byte_endian": "big",

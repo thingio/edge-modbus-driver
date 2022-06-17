@@ -1,14 +1,14 @@
 {
-  "id": "DEVICE-c2ea86f8p2fgtp3cpua0",
+  "id": "KM18B90",
   "name": "modbus",
   "desc": "123 ",
   "product_id": "KM18B90",
   "product_name": "温湿压传感器",
   "category": "tick",
   "recording": false,
-  "device_status": "off",
+  "device_status": "disconnected",
   "device_props": {
-    "ip": "172.16.251.112",
+    "ip": "172.16.251.22",
     "port": "502",
     "serial_bridge": "false",
     "slave": "1",

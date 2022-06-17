@@ -1,4 +1,4 @@
-module github.com/thingio/edge-randnum-driver
+module github.com/thingio/edge-modbus-driver
 
 replace (
 	github.com/thingio/edge-device-driver v0.2.1 => ../edge-device-driver

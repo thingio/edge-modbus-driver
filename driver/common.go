@@ -62,8 +62,6 @@ var (
 	}
 )
 
-
-
 func getDataHead(rgsAddr, rgsNum uint16) []byte {
 	bs := make([]byte, 4)
 	binary.BigEndian.PutUint16(bs[:2], rgsAddr)
@@ -142,8 +140,10 @@ func data2Bytes(dataType string, order binary.ByteOrder, data interface{}, size 
 				fmt.Sprintf("float32/float64 cannot be writen into %d bytes", size), nil)
 		}
 	case models.PropertyValueTypeInt, models.PropertyValueTypeUint:
-		return b.Bytes(), binary.Write(b, order, data)
-
+		if err := binary.Write(b, order, data); err != nil {
+			return nil, err
+		}
+		return b.Bytes(), nil
 	case models.PropertyValueTypeString:
 		return []byte(data.(string)), nil
 	}

@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/thingio/edge-device-driver/pkg/startup"
-	"github.com/thingio/edge-randnum-driver/driver"
+	"github.com/thingio/edge-modbus-driver/driver"
 )
 
 func main() {

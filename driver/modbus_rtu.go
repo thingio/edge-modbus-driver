@@ -19,8 +19,6 @@ type modbusRTUDriver struct {
 	pid    string             // product id
 	did    string             // device id
 	conn   io.ReadWriteCloser // tcp connection
-	closed bool
-	stop   chan bool
 	lock   sync.Mutex
 	once   sync.Once // ensure there is only one reconnect goroutine
 }
@@ -42,8 +40,6 @@ type modbusRTUTwin struct {
 	device  *models.Device
 
 	properties map[models.ProductPropertyID]*models.ProductProperty // for property's reading and writing
-	events     map[models.ProductEventID]*models.ProductEvent       // for event's subscribing
-	methods    map[models.ProductMethodID]*models.ProductMethod     // for method's calling
 
 	lg *logger.Logger
 
@@ -51,24 +47,21 @@ type modbusRTUTwin struct {
 	cancel context.CancelFunc
 }
 
-func NewModbusRTUDriver(device *models.Device) *modbusRTUDriver {
+func NewModbusRTUDriver(device *models.Device) (*modbusRTUDriver, error) {
 	conf, err := parseModbusRTUDeviceConf(device)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	return &modbusRTUDriver{
 		modbusRTUDeviceConf: conf,
 		tsID:                0,
-		pid:                 "",
-		did:                 "",
+		pid:                 device.ProductID,
+		did:                 device.ID,
 		conn:                nil,
-		stop:                make(chan bool),
-		closed:              false,
 		lock:                sync.Mutex{},
 		once:                sync.Once{},
-	}
+	}, nil
 }
-
 func parseModbusRTUDeviceConf(device *models.Device) (*modbusRTUDeviceConf, error) {
 	dc := &modbusRTUDeviceConf{}
 	for k, v := range device.DeviceProps {
@@ -126,17 +119,9 @@ func NewModbusRTUTwin(product *models.Product, device *models.Device) (models.De
 	if device == nil {
 		return nil, errors.NewCommonEdgeError(errors.DeviceTwin, "Device is nil", nil)
 	}
-	rtuDriver := NewModbusRTUDriver(device)
-	if rtuDriver == nil {
-		return nil, errors.NewCommonEdgeError(errors.DeviceTwin, "rtuDriver is nil", nil)
-	}
 	twin := &modbusRTUTwin{
-		modbusRTUDriver: rtuDriver,
-		product:         product,
-		device:          device,
-		properties:      make(map[models.ProductPropertyID]*models.ProductProperty),
-		events:          make(map[models.ProductEventID]*models.ProductEvent),
-		methods:         make(map[models.ProductMethodID]*models.ProductMethod),
+		product: product,
+		device:  device,
 	}
 	return twin, nil
 }
@@ -144,13 +129,15 @@ func NewModbusRTUTwin(product *models.Product, device *models.Device) (models.De
 func (m *modbusRTUTwin) Initialize(lg *logger.Logger) error {
 	m.lg = lg
 
-	m.modbusRTUDriver.pid = m.product.ID
-	m.modbusRTUDriver.did = m.device.ID
+	rtuDriver, err := NewModbusRTUDriver(m.device)
+	if err != nil {
+		return errors.NewCommonEdgeError(errors.DeviceTwin, "failed to initialize ModbusRTU driver", err)
+	}
+	m.modbusRTUDriver = rtuDriver
+
+	m.properties = make(map[models.ProductPropertyID]*models.ProductProperty)
 	for _, property := range m.product.Properties {
 		m.properties[property.Id] = property
-	}
-	for _, event := range m.product.Events {
-		m.events[event.Id] = event
 	}
 	return nil
 }
@@ -158,10 +145,6 @@ func (m *modbusRTUTwin) Initialize(lg *logger.Logger) error {
 func (m *modbusRTUTwin) Start(ctx context.Context) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)
 
-	if m.closed == true {
-		m.lg.Error("modbusTwin.Start Error: obj has been stopped")
-		return nil
-	}
 	conn, err := modbusclient.ConnectRTU(m.serialDevice, m.baudRate)
 	if err != nil {
 		m.lg.Errorf("modbusTwin.Start Error: RTU Connection: %+v %+v, err: %+v", m.serialDevice, m.baudRate, err)
@@ -175,8 +158,6 @@ func (m *modbusRTUTwin) Start(ctx context.Context) error {
 func (m *modbusRTUTwin) Stop(force bool) error {
 	m.cancel()
 
-	m.modbusRTUDriver.closed = true
-	m.modbusRTUDriver.stop <- true
 	if m.conn != nil {
 		if err := m.conn.Close(); err != nil {
 			m.lg.Info("Stop ModbusTwin RTUDriver Error: %v:%V, err: %+v", m.serialDevice, m.baudRate, err)
@@ -216,7 +197,7 @@ func (m *modbusRTUTwin) Read(propertyID models.ProductPropertyID) (map[models.Pr
 	if err != nil {
 		return res, err
 	}
-	res[propertyID] = value.(*models.DeviceData)
+	res[propertyID], _ = models.NewDeviceData(propertyID, property.FieldType, value)
 	return res, nil
 }
 func (d *modbusRTUDriver) pdu(frame []byte) []byte {
@@ -247,8 +228,7 @@ func (m *modbusRTUTwin) Write(propertyID models.ProductPropertyID, values map[mo
 	}
 
 	head := getDataHead(uint16(rgsAddr), uint16(rgsCount))
-	value := values[propertyID]
-	bs, err := data2Bytes(property.FieldType, binary.BigEndian, value, int(follow))
+	bs, err := data2Bytes(property.FieldType, binary.BigEndian, values[propertyID].Value, int(follow))
 	if err != nil {
 		return err
 	}
@@ -272,9 +252,9 @@ func (m *modbusRTUTwin) Write(propertyID models.ProductPropertyID, values map[mo
 }
 
 func (m *modbusRTUTwin) Subscribe(eventID models.ProductEventID, bus chan<- *models.DeviceDataWrapper) error {
-	return errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusRTU device does not support call-method"), nil)
+	return errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusRTU device does not support events' subscribing"), nil)
 }
 
 func (m *modbusRTUTwin) Call(methodID models.ProductMethodID, ins map[models.ProductPropertyID]*models.DeviceData) (outs map[models.ProductPropertyID]*models.DeviceData, err error) {
-	return nil, errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusRTU device does not support call-method"), nil)
+	return nil, errors.NewCommonEdgeError(errors.MethodNotAllowed, fmt.Sprintf("ModbusRTU device does not support methods' calling"), nil)
 }
